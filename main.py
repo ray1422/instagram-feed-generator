@@ -40,7 +40,7 @@ def main():
         logger=wandb_logger
     )
     train_ds, val_ds, test_ds = generate_dataset("/home/ray1422/data/ins_dataset/Influencer_brand_dataset",
-                                                 [.6, .2], debug=True)
+                                                 [.6, .2], debug=False)
     train_dl = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=6, pin_memory=True)
     valid_dl = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=6, pin_memory=True)
     trainer.fit(lightning_module, train_dl, valid_dl)

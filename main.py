@@ -1,3 +1,4 @@
+import os
 from typing import Tuple, Union
 
 import pytorch_lightning as pl
@@ -18,6 +19,7 @@ BATCH_SIZE = 8
 MAX_TEXT_LENGTH = 128
 TOP_K = 1000
 TOP_P = 0.95
+DATASET_PATH = os.getenv("DATASET_PATH", "/home/ray1422/data/ins_dataset/Influencer_brand_dataset")
 
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
 
@@ -39,8 +41,7 @@ def main():
         num_sanity_val_steps=0,
         logger=wandb_logger
     )
-    train_ds, val_ds, test_ds = generate_dataset("/home/ray1422/data/ins_dataset/Influencer_brand_dataset",
-                                                 [.6, .2], debug=False)
+    train_ds, val_ds, test_ds = generate_dataset(DATASET_PATH, [.6, .2], debug=False)
     train_dl = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, num_workers=6, pin_memory=True)
     valid_dl = DataLoader(val_ds, batch_size=BATCH_SIZE, shuffle=False, num_workers=6, pin_memory=True)
     trainer.fit(lightning_module, train_dl, valid_dl)
@@ -64,7 +65,6 @@ class LightningModule(pl.LightningModule):
         self.lr = LR
         self.tokenizer = GPT2Tokenizer.from_pretrained("distilgpt2")
         self.tokenizer.pad_token = -1
-
 
     def common_step(self, batch: Tuple[any, any, any]) -> torch.FloatTensor:
         pixel_values, ref_cap, cap = batch

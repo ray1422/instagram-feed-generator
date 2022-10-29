@@ -1,6 +1,7 @@
 import copy
 import csv
 import json
+import multiprocessing
 import os
 import pickle
 import random
@@ -17,6 +18,8 @@ from transformers import ViTFeatureExtractor
 
 global_data_path = ""
 random.seed(48763)
+
+N_CPU = multiprocessing.cpu_count()
 
 
 @dataclass(eq=False, frozen=True)
@@ -55,7 +58,7 @@ def generator_pkl(_dataset_path, debug=False):
     with open(f"{global_data_path}/post_info.txt", newline='') as f:
         reader = csv.reader(f, delimiter="\t")
         rows: List[DataRow]
-        with Pool(48) as p:
+        with Pool(N_CPU) as p:
             if debug:
                 rows = list(tqdm(p.imap_unordered(job, list(reader)[:1000]), total=1000))
             else:

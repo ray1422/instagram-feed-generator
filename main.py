@@ -1,20 +1,18 @@
-import os
-from typing import Tuple, Union
+from typing import Union
 
 import pytorch_lightning as pl
-
 import torch
+import wandb
 from pytorch_lightning.loggers import WandbLogger
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from transformers import GPT2Tokenizer
+from transformers import BertTokenizer, GPT2Tokenizer
 
-import wandb
 from dataset import *
 from image_caption_style_token import ImageCaptionStyleToken
 
-EPOCHS = 50
-LR = 1e-4
+EPOCHS = 500
+LR = 5e-4
 BATCH_SIZE = 8
 MAX_TEXT_LENGTH = 128
 TOP_K = 1000
@@ -22,6 +20,14 @@ TOP_P = 0.95
 DATASET_PATH = os.getenv("DATASET_PATH", "/home/ray1422/data/ins_dataset/Influencer_brand_dataset")
 
 device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
+
+def build_inputs_with_special_tokens(self, token_ids_0, token_ids_1=None):
+    outputs = [self.bos_token_id] + token_ids_0 + [self.eos_token_id]
+    return outputs
+
+
+GPT2Tokenizer.build_inputs_with_special_tokens = build_inputs_with_special_tokens
 
 
 def main():
@@ -35,8 +41,7 @@ def main():
 
     trainer = pl.Trainer(
         max_epochs=EPOCHS,
-        gpus=torch.cuda.device_count(),
-        gradient_clip_val=1.0,
+        accelerator='gpu', devices=1,
         precision=16,
         num_sanity_val_steps=0,
         logger=wandb_logger
@@ -48,23 +53,22 @@ def main():
     wandb.finish()
 
 
-def build_inputs_with_special_tokens(self, token_ids_0, token_ids_1=None):
-    outputs = [self.bos_token_id] + token_ids_0 + [self.eos_token_id]
-    return outputs
-
-
-GPT2Tokenizer.build_inputs_with_special_tokens = build_inputs_with_special_tokens
-
-
 class LightningModule(pl.LightningModule):
     def __init__(self):
         super().__init__()
+        # self.tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
+        self.tokenizer = GPT2Tokenizer.from_pretrained("distilgpt2")
+        self.tokenizer.pad_token_id = self.tokenizer.unk_token_id
         self.model = ImageCaptionStyleToken.from_encoder_decoder_pretrained("google/vit-base-patch16-224-in21k",
                                                                             "distilgpt2")
+
+        self.model.config.decoder_start_token_id = self.tokenizer.bos_token_id
+        self.model.config.pad_token_id = self.tokenizer.pad_token_id
         self.model = self.model.to(device)
+        # for name, param in self.model.named_parameters():
+        #     if "crossattention" not in name:
+        #         param.requires_grad = False
         self.lr = LR
-        self.tokenizer = GPT2Tokenizer.from_pretrained("distilgpt2")
-        self.tokenizer.pad_token = -1
 
     def common_step(self, batch: Tuple[any, any, any]) -> torch.FloatTensor:
         pixel_values, ref_cap, cap = batch
@@ -75,12 +79,14 @@ class LightningModule(pl.LightningModule):
         cap = self.tokenizer(cap, max_length=MAX_TEXT_LENGTH, truncation=True, padding="max_length",
                              return_tensors="pt")
 
-        encoder_outputs = self.model.encoder(pixel_values=pixel_values)
+        # encoder_outputs = self.model.encoder(pixel_values=pixel_values)
         outputs = self.model(
-            encoder_outputs=encoder_outputs,
-            decoder_input_ids=cap["input_ids"].to(device),
-            decoder_attention_mask=cap["attention_mask"].to(device),
+            # encoder_outputs=encoder_outputs,
+            pixel_values,
+            # decoder_input_ids=cap["input_ids"].to(device),
+            # decoder_attention_mask=cap["attention_mask"].to(device),
             labels=cap["input_ids"].to(device),
+
             return_dict=True,
         )
 
@@ -96,10 +102,9 @@ class LightningModule(pl.LightningModule):
             pixel_values, ref_cap, cap = batch
             bs, _, ch, h, w = pixel_values.size()
             pixel_values = torch.reshape(pixel_values, (bs, ch, h, w)).to(device)
-            encoder_outputs = self.model.encoder(pixel_values=pixel_values)
             generated_sentences = self.generate_sentence_from_image(
                 self.model,
-                encoder_outputs,
+                pixel_values,
                 self.tokenizer,
                 MAX_TEXT_LENGTH,
                 self.device
@@ -119,25 +124,26 @@ class LightningModule(pl.LightningModule):
         return torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
     @staticmethod
-    def generate_sentence_from_image(model, encoder_outputs, tokenizer, max_text_length: int, device) -> List[str]:
+    def generate_sentence_from_image(model, pixel_values, tokenizer, max_text_length: int, device) -> List[str]:
         try:
-            generated_so_far = torch.LongTensor([[tokenizer.bos_token_id]] * len(encoder_outputs.last_hidden_state)).to(
-                device)
+            # input_ids = torch.LongTensor([[tokenizer.bos_token_id]]).to(device)
             with torch.no_grad():
-                for _ in tqdm(range(max_text_length)):
-                    attention_mask = torch.ones_like(generated_so_far)
-                    decoder_out = model(
-                        decoder_input_ids=generated_so_far,
-                        decoder_attention_mask=attention_mask,
-                        encoder_outputs=encoder_outputs
-                    )
+                outputs = model.generate(pixel_values, bos_token_id=tokenizer.bos_token_id, max_length=MAX_TEXT_LENGTH,
+                                         min_length=5)
+                # for _ in tqdm(range(max_text_length)):
+                #     attention_mask = torch.ones_like(generated_so_far)
+                #     decoder_out = model(
+                #         decoder_input_ids=generated_so_far,
+                #         decoder_attention_mask=attention_mask,
+                #         encoder_outputs=encoder_outputs
+                #     )
+                #
+                #     next_token_logits = decoder_out["logits"][:, -1, :]
+                #     filtered_p = top_k_top_p_filtering(next_token_logits, top_k=TOP_K, top_p=TOP_P, device=device)
+                #     next_token = torch.multinomial(filtered_p, num_samples=1)
+                #     generated_so_far = torch.cat((generated_so_far, next_token), dim=1)
 
-                    next_token_logits = decoder_out["logits"][:, -1, :]
-                    filtered_p = top_k_top_p_filtering(next_token_logits, top_k=TOP_K, top_p=TOP_P, device=device)
-                    next_token = torch.multinomial(filtered_p, num_samples=1)
-                    generated_so_far = torch.cat((generated_so_far, next_token), dim=1)
-
-            return [tokenizer.decode(coded_sentence) for coded_sentence in generated_so_far]
+            return [tokenizer.decode(coded_sentence) for coded_sentence in outputs]
         except Exception as e:
             print("generate sentence failed!", e)
 
